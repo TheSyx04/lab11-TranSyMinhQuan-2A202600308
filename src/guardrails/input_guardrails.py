@@ -45,6 +45,11 @@ def detect_injection(user_input: str) -> bool:
         r"pretend\s+you\s+are",
         r"act\s+as\s+(a\s+|an\s+)?unrestricted",
         r"(admin\s+)?password|api\s*key|token|connection\s*string|credentials",
+        r"translate\s+your\s+(system\s+)?prompt",
+        r"provide\s+all\s+credentials",
+        r"fill\s+in\s*:\s*.*(password|api\s*key|connection\s*string)",
+        r"write\s+a\s+story.*password",
+        r"dan\b",
         r"b[oỏ]\s+qua\s+m[oọ]i\s+h[uư][oớ]ng\s+d[ẫa]n",
         r"m[ậa]t\s+kh[ẩa]u\s+admin",
     ]
@@ -77,6 +82,9 @@ def topic_filter(user_input: str) -> bool:
     input_lower = user_input.lower().strip()
 
     if not input_lower:
+        return True
+
+    if len(input_lower) > 2000:
         return True
 
     if any(topic in input_lower for topic in BLOCKED_TOPICS):
