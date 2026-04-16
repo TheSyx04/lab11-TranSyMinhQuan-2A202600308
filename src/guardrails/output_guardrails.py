@@ -5,7 +5,6 @@ Lab 11 — Part 2B: Output Guardrails
   TODO 8: Output Guardrail Plugin (ADK)
 """
 import re
-import textwrap
 
 from google.genai import types
 from google.adk.agents import llm_agent
@@ -41,12 +40,13 @@ def content_filter(response: str) -> dict:
 
     # PII patterns to check
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "vn_phone": r"\b0\d{9,10}\b",
+        "email": r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}",
+        "vn_national_id": r"\b\d{9}\b|\b\d{12}\b",
+        "api_key": r"\bsk-[a-zA-Z0-9_-]+\b",
+        "password": r"\bpassword\s*[:=]\s*\S+",
+        "internal_host": r"\b[a-zA-Z0-9.-]+\.internal(?::\d+)?\b",
+        "db_conn": r"\b(db|database)\.[a-zA-Z0-9.-]+(?::\d+)?\b",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -73,31 +73,29 @@ def content_filter(response: str) -> dict:
 # Instead, pass the content to evaluate as the user message.
 # ============================================================
 
-SAFETY_JUDGE_INSTRUCTION = """You are a safety classifier for an AI banking assistant.
-Your job is to determine if a given AI response is safe to send to customers.
-
+SAFETY_JUDGE_INSTRUCTION = """You are a quality assurance judge for a banking AI assistant.
 When you receive a message, treat it as the AI response to evaluate.
 
-Check for:
-1. Leaked internal information (passwords, API keys, database details)
-2. Harmful or inappropriate content
-3. Instructions that could harm the user
-4. Fabricated information presented as fact (hallucination)
-5. Off-topic responses not related to banking
+Score on 4 criteria (1-5 each):
+1. SAFETY: No harmful content, leaked secrets, or dangerous instructions
+2. RELEVANCE: Response is about banking or finance and answers the user intent
+3. ACCURACY: No fabricated data, hallucinated numbers, or false claims
+4. TONE: Professional, helpful, empathetic customer service tone
 
-Respond with ONLY one word: SAFE or UNSAFE
-If UNSAFE, add a brief reason on the next line.
+Respond in EXACTLY this format:
+SAFETY: <score>
+RELEVANCE: <score>
+ACCURACY: <score>
+TONE: <score>
+VERDICT: PASS or FAIL
+REASON: <one sentence>
 """
 
-# TODO: Create safety_judge_agent using LlmAgent
-# Hint:
-# safety_judge_agent = llm_agent.LlmAgent(
-#     model="gemini-2.0-flash",
-#     name="safety_judge",
-#     instruction=SAFETY_JUDGE_INSTRUCTION,
-# )
-
-safety_judge_agent = None  # TODO: Replace with implementation
+safety_judge_agent = llm_agent.LlmAgent(
+    model="gemini-2.5-flash-lite",
+    name="safety_judge",
+    instruction=SAFETY_JUDGE_INSTRUCTION,
+)
 judge_runner = None
 
 
@@ -122,10 +120,35 @@ async def llm_safety_check(response_text: str) -> dict:
     if safety_judge_agent is None or judge_runner is None:
         return {"safe": True, "verdict": "Judge not initialized — skipping"}
 
-    prompt = f"Evaluate this AI response for safety:\n\n{response_text}"
+    prompt = f"Evaluate this AI response:\n\n{response_text}"
     verdict, _ = await chat_with_agent(safety_judge_agent, judge_runner, prompt)
-    is_safe = "SAFE" in verdict.upper() and "UNSAFE" not in verdict.upper()
-    return {"safe": is_safe, "verdict": verdict.strip()}
+    parsed = _parse_judge_verdict(verdict)
+    return {
+        "safe": parsed["verdict"] == "PASS",
+        "verdict": verdict.strip(),
+        "scores": parsed["scores"],
+        "reason": parsed["reason"],
+    }
+
+
+def _parse_judge_verdict(verdict_text: str) -> dict:
+    """Parse structured judge output into scores and verdict."""
+    scores = {}
+    for key in ["SAFETY", "RELEVANCE", "ACCURACY", "TONE"]:
+        match = re.search(rf"{key}:\s*([1-5])", verdict_text, flags=re.IGNORECASE)
+        if match:
+            scores[key.lower()] = int(match.group(1))
+
+    verdict_match = re.search(r"VERDICT:\s*(PASS|FAIL)", verdict_text, flags=re.IGNORECASE)
+    reason_match = re.search(r"REASON:\s*(.+)", verdict_text, flags=re.IGNORECASE)
+    verdict = verdict_match.group(1).upper() if verdict_match else "FAIL"
+    reason = reason_match.group(1).strip() if reason_match else "Missing structured reason from judge"
+
+    # Fail-safe: if parser cannot recover all expected fields, keep strict behavior.
+    if len(scores) < 4:
+        verdict = "FAIL"
+
+    return {"scores": scores, "verdict": verdict, "reason": reason}
 
 
 # ============================================================
@@ -149,6 +172,9 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         self.blocked_count = 0
         self.redacted_count = 0
         self.total_count = 0
+        self.pii_redaction_count = 0
+        self.judge_fail_count = 0
+        self.last_judge_result = None
 
     def _extract_text(self, llm_response) -> str:
         """Extract text from LLM response."""
@@ -172,16 +198,33 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        filter_result = content_filter(response_text)
+        checked_text = response_text
+        if not filter_result["safe"]:
+            self.redacted_count += 1
+            self.pii_redaction_count += 1
+            checked_text = filter_result["redacted"]
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=checked_text)],
+            )
 
-        return llm_response  # TODO: modify if needed
+        if self.use_llm_judge:
+            judge_result = await llm_safety_check(checked_text)
+            self.last_judge_result = judge_result
+            if not judge_result["safe"]:
+                self.blocked_count += 1
+                self.judge_fail_count += 1
+                safe_msg = (
+                    "I cannot provide this response because it may violate "
+                    "quality and safety standards. Please rephrase your request."
+                )
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text=safe_msg)],
+                )
+
+        return llm_response
 
 
 # ============================================================

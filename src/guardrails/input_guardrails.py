@@ -38,9 +38,15 @@ def detect_injection(user_input: str) -> bool:
         True if injection detected, False otherwise
     """
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        r"ignore\s+(all\s+)?(previous|above)\s+instructions",
+        r"you\s+are\s+now",
+        r"system\s+prompt",
+        r"reveal\s+(your\s+)?(instructions|prompt)",
+        r"pretend\s+you\s+are",
+        r"act\s+as\s+(a\s+|an\s+)?unrestricted",
+        r"(admin\s+)?password|api\s*key|token|connection\s*string|credentials",
+        r"b[oỏ]\s+qua\s+m[oọ]i\s+h[uư][oớ]ng\s+d[ẫa]n",
+        r"m[ậa]t\s+kh[ẩa]u\s+admin",
     ]
 
     for pattern in INJECTION_PATTERNS:
@@ -68,14 +74,26 @@ def topic_filter(user_input: str) -> bool:
     Returns:
         True if input should be BLOCKED (off-topic or blocked topic)
     """
-    input_lower = user_input.lower()
+    input_lower = user_input.lower().strip()
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return True
-    # 2. If input doesn't contain any allowed topic -> return True
-    # 3. Otherwise -> return False (allow)
+    if not input_lower:
+        return True
 
-    pass  # Replace with your implementation
+    if any(topic in input_lower for topic in BLOCKED_TOPICS):
+        return True
+
+    sql_like_patterns = [
+        r"\bselect\s+\*\s+from\b",
+        r"\bdrop\s+table\b",
+        r"\bunion\s+select\b",
+    ]
+    if any(re.search(pattern, input_lower) for pattern in sql_like_patterns):
+        return True
+
+    if not any(topic in input_lower for topic in ALLOWED_TOPICS):
+        return True
+
+    return False
 
 
 # ============================================================
@@ -96,6 +114,8 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         super().__init__(name="input_guardrail")
         self.blocked_count = 0
         self.total_count = 0
+        self.blocked_injection_count = 0
+        self.blocked_topic_count = 0
 
     def _extract_text(self, content: types.Content) -> str:
         """Extract plain text from a Content object."""
@@ -128,14 +148,21 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 3. If both are False: return None (let message through)
+        if detect_injection(text):
+            self.blocked_count += 1
+            self.blocked_injection_count += 1
+            return self._block_response(
+                "Request blocked by input guardrail: potential prompt injection detected."
+            )
 
-        pass  # Replace with your implementation
+        if topic_filter(text):
+            self.blocked_count += 1
+            self.blocked_topic_count += 1
+            return self._block_response(
+                "Request blocked by input guardrail: outside supported banking topics or unsafe content."
+            )
+
+        return None
 
 
 # ============================================================

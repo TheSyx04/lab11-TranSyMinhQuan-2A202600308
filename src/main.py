@@ -84,7 +84,9 @@ async def part3_testing():
     print("=" * 60)
 
     from testing.testing import run_comparison, print_comparison, SecurityTestPipeline
-    from agents.agent import create_unsafe_agent
+    from agents.agent import create_protected_agent
+    from guardrails.input_guardrails import InputGuardrailPlugin
+    from guardrails.output_guardrails import OutputGuardrailPlugin, _init_judge
 
     # TODO 10: Before vs after comparison
     print("\n--- TODO 10: Before/After Comparison ---")
@@ -94,15 +96,34 @@ async def part3_testing():
     else:
         print("Complete TODO 10 to see the comparison.")
 
-    # TODO 11: Automated security pipeline
+    # TODO 11: Automated security pipeline + assignment suites + audit export
     print("\n--- TODO 11: Security Test Pipeline ---")
-    agent, runner = create_unsafe_agent()
+    _init_judge()
+    input_plugin = InputGuardrailPlugin()
+    output_plugin = OutputGuardrailPlugin(use_llm_judge=True)
+    agent, runner = create_protected_agent(plugins=[input_plugin, output_plugin])
+
     pipeline = SecurityTestPipeline(agent, runner)
     results = await pipeline.run_all()
-    if results:
-        pipeline.print_report(results)
+    pipeline.print_report(results)
+
+    print("\n--- Assignment Required Test Suites ---")
+    suite_results = await pipeline.run_required_suites(user_id="assignment-user")
+    pipeline.print_suite_summary(suite_results)
+
+    metrics = pipeline.calculate_metrics(results)
+    alerts = pipeline.check_alerts(metrics)
+    audit_path = pipeline.export_audit_json("audit_log.json")
+
+    print("\n--- Monitoring & Audit ---")
+    if alerts:
+        for alert in alerts:
+            print(alert)
     else:
-        print("Complete TODO 11 to see the pipeline report.")
+        print("No alerts fired.")
+
+    print(f"Audit log exported: {audit_path}")
+    print(f"Audit records: {len(pipeline.audit_log)}")
 
 
 def part4_hitl():

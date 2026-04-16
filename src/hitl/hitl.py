@@ -65,32 +65,42 @@ class ConfidenceRouter:
         Returns:
             RoutingDecision with routing action and metadata
         """
-        # TODO 12: Implement routing logic
-        #
-        # 1. Check if action_type is in HIGH_RISK_ACTIONS
-        #    -> If yes: always escalate (action="escalate", priority="high",
-        #       requires_human=True, reason="High-risk action: {action_type}")
-        #
-        # 2. Check confidence thresholds:
-        #    - confidence >= 0.9:
-        #      action="auto_send", priority="low",
-        #      requires_human=False, reason="High confidence"
-        #
-        #    - 0.7 <= confidence < 0.9:
-        #      action="queue_review", priority="normal",
-        #      requires_human=True, reason="Medium confidence — needs review"
-        #
-        #    - confidence < 0.7:
-        #      action="escalate", priority="high",
-        #      requires_human=True, reason="Low confidence — escalating"
+        normalized_conf = max(0.0, min(1.0, confidence))
+
+        if action_type in HIGH_RISK_ACTIONS:
+            return RoutingDecision(
+                action="escalate",
+                confidence=normalized_conf,
+                reason=f"High-risk action: {action_type}",
+                priority="high",
+                requires_human=True,
+            )
+
+        if normalized_conf >= self.HIGH_THRESHOLD:
+            return RoutingDecision(
+                action="auto_send",
+                confidence=normalized_conf,
+                reason="High confidence",
+                priority="low",
+                requires_human=False,
+            )
+
+        if normalized_conf >= self.MEDIUM_THRESHOLD:
+            return RoutingDecision(
+                action="queue_review",
+                confidence=normalized_conf,
+                reason="Medium confidence - needs review",
+                priority="normal",
+                requires_human=True,
+            )
 
         return RoutingDecision(
-            action="auto_send",
-            confidence=confidence,
-            reason="TODO: implement routing logic",
-            priority="low",
-            requires_human=False,
-        )  # TODO: Replace with implementation
+            action="escalate",
+            confidence=normalized_conf,
+            reason="Low confidence - escalating",
+            priority="high",
+            requires_human=True,
+        )
 
 
 # ============================================================
@@ -109,27 +119,27 @@ class ConfidenceRouter:
 hitl_decision_points = [
     {
         "id": 1,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
+        "name": "Large transfer authorization",
+        "trigger": "Transfer request is high-value (>= 100,000,000 VND) or receiver is first-time beneficiary",
+        "hitl_model": "human-in-the-loop",
+        "context_needed": "User profile, transaction history, fraud risk score, destination account metadata",
+        "example": "Customer asks to transfer 250,000,000 VND to a new account at midnight from a new device",
     },
     {
         "id": 2,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
+        "name": "Sensitive account change",
+        "trigger": "Request involves close_account, change_password, or update_personal_info",
+        "hitl_model": "human-on-the-loop",
+        "context_needed": "Recent authentication events, KYC details, previous support tickets, user intent transcript",
+        "example": "User requests to close account and disable all alerts immediately after failed OTP attempts",
     },
     {
         "id": 3,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
+        "name": "Policy conflict adjudication",
+        "trigger": "Safety rules and user intent produce conflicting decisions or confidence between 0.70 and 0.80",
+        "hitl_model": "human-as-tiebreaker",
+        "context_needed": "Guardrail triggers, model response draft, policy excerpts, compliance constraints",
+        "example": "User asks for transaction support but includes identity details that trigger both privacy and support policies",
     },
 ]
 
